@@ -1,0 +1,20 @@
+# Node
+node_modules/
+dist/
+build/
+.env
+
+# PlatformIO
+hardware/.pio/
+
+# Editors
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# React Native
+mobile/ios/Pods/
+*.log
