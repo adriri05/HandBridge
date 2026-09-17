@@ -1,87 +1,76 @@
 #include <Arduino.h>
+#include <Wire.h>
 
-// Definición de los pines para el ESP32-C3 Mini
+// Definición de los pines para el ESP32-C3 Mini (según schematics/v0-1-0.png)
 const int pinIndice = 0; // GPIO0
 const int pinMedio = 1;  // GPIO1
 const int pinPulgar = 2; // GPIO2
 
-const int NUM_POTES = 3;
-const int pines[NUM_POTES] = { pinIndice, pinMedio, pinPulgar };
+const int NUM_SENSORES = 3;
+const int pines[NUM_SENSORES] = { pinIndice, pinMedio, pinPulgar };
 
-// Cada tramo (bajo/medio/alto) de cada potenciómetro manda un mensaje fijo
-const char* mensajes[NUM_POTES][3] = {
-  { "Hola",  "Adios",  "Si" },     // pinIndice
-  { "No",    "Vale",   "Hambre" }, // pinMedio
-  { "Sed",   "Bano",   "Luz" }     // pinPulgar
-};
+// I2C para el MPU6050 (según schematics/v0-1-0.png)
+const int pinSDA = 8; // GPIO8
+const int pinSCL = 9; // GPIO9
+const uint8_t MPU_ADDR = 0x68;
 
-// Umbrales del ADC (0-4095) divididos en 3 tramos iguales
-const int UMBRAL_BAJO_MEDIO = 1365;
-const int UMBRAL_MEDIO_ALTO = 2730;
+// Intervalo entre envíos (ms)
+const unsigned long INTERVALO_ENVIO = 50;
+unsigned long ultimoEnvio = 0;
 
-// Último tramo enviado por cada potenciómetro (-1 = ninguno todavía)
-int ultimoTramo[NUM_POTES] = { -1, -1, -1 };
+void mpuEscribirRegistro(uint8_t reg, uint8_t valor) {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(reg);
+  Wire.write(valor);
+  Wire.endTransmission();
+}
 
-// Tramo candidato mientras se espera a que se estabilice, y desde cuándo
-int tramoCandidato[NUM_POTES] = { -1, -1, -1 };
-unsigned long inicioCandidato[NUM_POTES] = { 0, 0, 0 };
+// ax: inclinación izquierda/derecha, az: subir/bajar
+void mpuLeerAccel(int16_t &ax, int16_t &az) {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x3B); // ACCEL_XOUT_H
+  Wire.endTransmission(false);
+  Wire.requestFrom((int)MPU_ADDR, 6, true);
 
-// Tiempo que un tramo debe mantenerse estable antes de enviarse (ms)
-const unsigned long TIEMPO_ESTABILIZACION = 250;
-
-int obtenerTramo(int valorAnalogico) {
-  if (valorAnalogico < UMBRAL_BAJO_MEDIO) return 0;
-  if (valorAnalogico < UMBRAL_MEDIO_ALTO) return 1;
-  return 2;
+  ax = (Wire.read() << 8) | Wire.read();
+  Wire.read(); Wire.read(); // ACCEL_YOUT (descartado)
+  az = (Wire.read() << 8) | Wire.read();
 }
 
 void setup() {
   Serial.begin(115200);
 
-  pinMode(pinIndice, INPUT);
-  pinMode(pinMedio, INPUT);
-  pinMode(pinPulgar, INPUT);
+  for (int i = 0; i < NUM_SENSORES; i++) {
+    pinMode(pines[i], INPUT);
+  }
 
-  Serial.println("Iniciando lectura de sensores...");
+  Wire.begin(pinSDA, pinSCL);
+  mpuEscribirRegistro(0x6B, 0x00); // PWR_MGMT_1: despierta el MPU6050
 }
 
 void loop() {
   unsigned long ahora = millis();
-  int tramoActual[NUM_POTES];
-  int indicesCambiados[NUM_POTES];
-  int numCambios = 0;
+  if (ahora - ultimoEnvio < INTERVALO_ENVIO) return;
+  ultimoEnvio = ahora;
 
-  // 1. Leer cada potenciómetro y calcular su tramo actual
-  for (int i = 0; i < NUM_POTES; i++) {
-    int valor = analogRead(pines[i]);
-    tramoActual[i] = obtenerTramo(valor);
-
-    if (tramoActual[i] != tramoCandidato[i]) {
-      // Nuevo tramo candidato: reinicia el contador de estabilización
-      tramoCandidato[i] = tramoActual[i];
-      inicioCandidato[i] = ahora;
-    }
-
-    // Solo se considera "cambio" si el tramo lleva estable el tiempo mínimo
-    // y es distinto del último tramo confirmado (evita pasar por tramos intermedios)
-    if (tramoCandidato[i] != ultimoTramo[i] &&
-        ahora - inicioCandidato[i] >= TIEMPO_ESTABILIZACION) {
-      indicesCambiados[numCambios] = i;
-      numCambios++;
-    }
+  int valores[NUM_SENSORES];
+  for (int i = 0; i < NUM_SENSORES; i++) {
+    valores[i] = analogRead(pines[i]);
   }
 
-  // 2. Solo mandar mensaje si ha cambiado exactamente un potenciómetro
-  if (numCambios == 1) {
-    int i = indicesCambiados[0];
-    Serial.println(mensajes[i][tramoCandidato[i]]);
-  }
+  int16_t ax, az;
+  mpuLeerAccel(ax, az);
 
-  // 3. Actualizar el estado de los potenciómetros que cambiaron
-  for (int j = 0; j < numCambios; j++) {
-    int i = indicesCambiados[j];
-    ultimoTramo[i] = tramoCandidato[i];
-  }
+  // CSV: indice,medio,pulgar,ax,az
+  Serial.print(valores[0]);
+  Serial.print(',');
+  Serial.print(valores[1]);
+  Serial.print(',');
+  Serial.print(valores[2]);
+  Serial.print(',');
+  Serial.print(ax);
+  Serial.print(',');
+  Serial.println(az);
 
-  delay(20);
+  delay(500);
 }
