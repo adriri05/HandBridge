@@ -14,6 +14,11 @@ const int pinSDA = 8; // GPIO8
 const int pinSCL = 9; // GPIO9
 const uint8_t MPU_ADDR = 0x68;
 
+// Offsets de calibración del MPU6050 (calculados en setup)
+int16_t axOffset = 0;
+int16_t azOffset = 0;
+const int MUESTRAS_CALIBRACION = 200;
+
 // Intervalo entre envíos (ms)
 const unsigned long INTERVALO_ENVIO = 50;
 unsigned long ultimoEnvio = 0;
@@ -26,7 +31,8 @@ void mpuEscribirRegistro(uint8_t reg, uint8_t valor) {
 }
 
 // ax: inclinación izquierda/derecha, az: subir/bajar
-void mpuLeerAccel(int16_t &ax, int16_t &az) {
+// Lectura cruda, sin aplicar offsets de calibración
+void mpuLeerAccelCrudo(int16_t &ax, int16_t &az) {
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(0x3B); // ACCEL_XOUT_H
   Wire.endTransmission(false);
@@ -35,6 +41,30 @@ void mpuLeerAccel(int16_t &ax, int16_t &az) {
   ax = (Wire.read() << 8) | Wire.read();
   Wire.read(); Wire.read(); // ACCEL_YOUT (descartado)
   az = (Wire.read() << 8) | Wire.read();
+}
+
+// Lectura con offsets de calibración aplicados
+void mpuLeerAccel(int16_t &ax, int16_t &az) {
+  mpuLeerAccelCrudo(ax, az);
+  ax -= axOffset;
+  az -= azOffset;
+}
+
+// Promedia MUESTRAS_CALIBRACION lecturas en reposo y calcula offsets.
+// Asume el sensor apoyado plano (Z alineado con la gravedad, ~1g = 16384 LSB).
+void calibrarMPU() {
+  long sumAx = 0, sumAz = 0;
+
+  for (int i = 0; i < MUESTRAS_CALIBRACION; i++) {
+    int16_t ax, az;
+    mpuLeerAccelCrudo(ax, az);
+    sumAx += ax;
+    sumAz += az;
+    delay(3);
+  }
+
+  axOffset = sumAx / MUESTRAS_CALIBRACION;
+  azOffset = (sumAz / MUESTRAS_CALIBRACION) - 16384;
 }
 
 void setup() {
@@ -46,6 +76,9 @@ void setup() {
 
   Wire.begin(pinSDA, pinSCL);
   mpuEscribirRegistro(0x6B, 0x00); // PWR_MGMT_1: despierta el MPU6050
+
+  delay(100); // margen tras despertar antes de calibrar
+  calibrarMPU();
 }
 
 void loop() {
